@@ -1,0 +1,133 @@
+{
+  "config": {
+    "abort": {
+      "single_instance_allowed": "Only one instance of the integration is allowed."
+    },
+    "error": {
+      "boiler_device_not_found": "Boiler device could not be found in the device registry.",
+      "boiler_required_entities_not_found": "Missing necessary entity, are you sure you are using [ESPHome component for Dražice OKHE smart water heater](https://github.com/LubosD/esphome-smartboiler/tree/master) ? If not, try manual configuration.",
+      "invalid_venus_mqtt_topic": "Invalid Venus MQTT topic. It should be in the format of MAC address of the Venus OS device \"'<'IP'>'/N/'<'topic'>'\" (for example ab12bc34ef56).",
+      "missing_vrm_token": "If a VRM installation ID is provided, the VRM token is required.",
+      "missing_vrm_installation_id": "If a VRM token is provided, the VRM installation ID is required.",
+      "invalid_vrm_installation_id": "Invalid VRM installation ID. It should be a number.",
+      "vrm_api_connection_error": "Error when connecting to the VRM API.",
+      "vrm_api_connection_error_2": "Unexpected error when connecting to the VRM API.",
+      "missing_grid_sensor": "It is necessary to select at least one sensor from the grid.",
+      "missing_load_sensor": "It is necessary to select at least one sensor from the load.",
+      "missing_phase_sensor": "The selected phase does not match the selected sensors.",
+      "battery_soc_bottom": "Minimum value for battery state of charge can not be higher than the maximum value."
+    },
+    "step": {
+      "init": {
+        "description": "Select the configuration mode for the boiler and solar system."
+      },
+      "user": {
+        "description": "The automatic configuration can be used if the [ESPHome component for Dražice OKHE smart water heater](https://github.com/LubosD/esphome-smartboiler/tree/master) is used and **Venus OS** is configured correctly.\n\nIf other systems are used and entities are already added in HA, use the manual option.\n\nIt is possible to use only one of these options or both at the same time.",
+        "data": {
+          "integration_name": "Name of the integration"
+        },
+        "data_description": {
+          "boiler_conf_mode": "The boiler must be added to the HA before auto configuration.",
+          "venus_conf_mode": "Venus OS must have MQTT configured correctly before auto configuration."
+        }
+      },
+      "boiler_automatic": {
+        "data": {
+          "boiler_device": "Boiler device setuped by ESPHome",
+          "boiler_power": "Boiler power in Watts",
+          "boiler_volume": "Boiler volume in Liters"
+        }
+      },
+      "boiler_manual": {
+        "data": {
+          "boiler_mode": "Boiler mode",
+          "boiler_heat": "Boiler heat",
+          "boiler_state": "Boiler state",
+          "boiler_temp1": "Boiler temperature 1",
+          "boiler_temp2": "Boiler temperature 2",
+          "boiler_thermostat": "Boiler thermostat",
+          "boiler_power": "Boiler power in Watts",
+          "boiler_volume": "Boiler volume in Liters",
+          "boiler_min_temp": "Boiler minimum temperature",
+          "boiler_max_temp": "Boiler maximum temperature"
+        },
+        "data_description": {
+          "boiler_mode": "Boiler mode is used to set the boiler status (antifreeze, smart, prog, manual, etc.). It is used to control the boiler.",
+          "boiler_heat": "Status of the boiler heating element (on/off)",
+          "boiler_state": "Status of the boiler connection (Connected/Disonnected)",
+          "boiler_temp1": "Temperature of the boilers lower temperature sensor.",
+          "boiler_temp2": "Temperature of the boilers upper temperature sensor (This temp is shown on the display of the boiler for Dražice boilers).",
+          "boiler_thermostat": "Thermostat entity that will be used to control the temperature of the boiler."
+        }
+      },
+      "solar_automatic": {
+        "description": "Necessary information to connect to the Venus OS and VRM.\nIf you don't have VRM Portal or don't want to use solar forecast, the installation ID and token can be left empty.\n\nVRM installation ID and token are required to use VRM API to get solar forecast.",
+        "data": {
+          "venus_mqtt_topic": "Venus MQTT topic",
+          "vrm_installation_id": "VRM installation ID",
+          "vrm_token": "VRM token"
+        },
+        "data_description": {
+          "venus_mqtt_topic": "Topic that is used to communicate with the Venus OS (MAC address of the Venus OS device \"'<'IP'>'/N/'<'topic'>'\").",
+          "vrm_installation_id": "Installation ID of the VRM (Number in the VRM Portal URL \"installation/'<'installation_id'>'\").",
+          "vrm_token": "API Token from VRM Portal."
+        }
+      },
+      "solar_manual": {
+        "description": "System is designed to work with the one-phase solar system, so there is only one \"*critical_load*\" entity.\nIf you don't have VRM Portal or don't want to use solar forecast, the installation ID and token can be left empty.\n\nVRM installation ID and token are required to use VRM API to get solar forecast.\n\nIt is necessary to select 1 sensor from the grid and 1 from the load, depending on which phase is supported by the solar system. The others are optional, just to display the informations.",
+        "data": {
+          "grid_l1": "Grid L1",
+          "grid_l2": "Grid L2",
+          "grid_l3": "Grid L3",
+          "load_l1": "Load L1",
+          "load_l2": "Load L2",
+          "load_l3": "Load L3",
+          "critical_load": "Critical load",
+          "battery_ess": "Battery ESS",
+          "battery_power": "Battery power",
+          "battery_soc": "Battery State of Charge",
+          "pv_power": "Photovoltaic power",
+          "system_state": "System state",
+          "grid_state": "Grid state",
+          "vrm_installation_id": "VRM installation ID",
+          "vrm_token": "VRM token"
+        },
+        "data_description": {
+          "grid_l1": "Grid phase L1 power sensor.",
+          "grid_l2": "Grid phase L2 power sensor.",
+          "grid_l3": "Grid phase L3 power sensor.",
+          "load_l1": "Load phase L1 power sensor.",
+          "load_l2": "Load phase L2 power sensor.",
+          "load_l3": "Load phase L3 power sensor.",
+          "critical_load": "Critical load power sensor (loads that should be powered in case of grid failure).",
+          "battery_ess": "Battery ESS power sensor (ESS status).",
+          "battery_power": "Battery power sensor (Power of the battery).",
+          "battery_soc": "Battery state of charge sensor.",
+          "pv_power": "PV power sensor (Solar panels power).",
+          "system_state": "System state sensor (Discharging, Bulk Charging, etc.).",
+          "grid_state": "Grid state sensor (Grid available or not, etc.).",
+          "vrm_installation_id": "Installation ID of the VRM (Number in the VRM Portal URL \"installation/'<'installation_id'>'\").",
+          "vrm_token": "API Token from VRM Portal."
+        }
+      },
+      "additionals": {
+        "data": {
+          "battery_capacity": "Battery capacity",
+          "battery_soc_top": "Battery state of charge top threshold",
+          "battery_soc_bottom": "Battery state of charge bottom threshold",
+          "temp_variable": "Temperature variable",
+          "grid_threshold": "Grid threshold",
+          "manager_updates": "Manager updates"
+        },
+        "data_description": {
+          "battery_capacity": "Capacity of the battery in Wh.",
+          "battery_soc_top": "Battery state of charge top threshold (When value is reached, the heating starts).",
+          "battery_soc_bottom": "Battery state of charge bottom threshold (When value is reached, the heating stops).",
+          "temp_variable": "Basically the minimum temperature (Temperature by which the required temperature is subtracted to calculate the surplus).",
+          "grid_threshold": "Grid threshold (Power threshold at which to turn off heating, if this value is exceeded on the grid).",
+          "manager_updates": "Manager updates in seconds (Interval at which the manager updates the status of the system)"
+        }
+      }
+    }
+  }
+}

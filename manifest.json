@@ -1,0 +1,14 @@
+{
+  "domain": "pv_water_heating_manager",
+  "name": "PV Water Heating Manager",
+  "description": "Component for effective management of domestic hot water heating using photovoltaics and batteries.",
+  "version": "1.0",
+  "integration_type": "service",
+  "documentation": "https://github.com/FNewel/PV-Water-Heating-Manager/blob/main/README.md",
+  "dependencies": ["mqtt"],
+  "codeowners": ["@FNewell"],
+  "config_flow": true,
+  "requirements": [],
+  "iot_class": "local_polling",
+  "loggers": ["custom_components.pv_water_heating_manager"]
+}
