@@ -191,6 +191,7 @@ async def async_setup_mqtt_listeners_and_sensors(hass: HomeAssistant, entry: Con
     if not subscribe:
         for unsub in hass.data[DOMAIN]["mqtt_subscriptions"]:
             unsub()
+        hass.data[DOMAIN]["mqtt_subscriptions"].clear()
         subscribe = True
 
     # Subscribe to all the topics and publish the discovery config for each sensor, based on the config data.
@@ -336,7 +337,7 @@ class MQTTMessageHandler:
         await self._hass.data[DOMAIN]["manager_status_select"].async_select_option("Off")
         self._hass.data[DOMAIN]["manager_status_sensor"].set_state("Off - Warning (MQTT connection lost)")
 
-        _LOGGER.warning("Lost connection to MQTT broker.")
+        _LOGGER.warning("Connection to MQTT broker lost for 30 seconds - Manager set to Off.")
 
     @callback
     async def async_mqtt_connection_changed(self, event):
@@ -347,10 +348,16 @@ class MQTTMessageHandler:
 
         _LOGGER.debug("MQTT connection status changed: %s", event)
 
+        # Store last known state of mqtt connection
+        last_mqtt_connected = self._hass.data[DOMAIN]["mqtt_connected"]
+
         # Store the connection status in hass.data
         self._hass.data[DOMAIN]["mqtt_connected"] = event
 
-        if event:
+        # If last state was Off(False) and the connection is established(True), cancel the timer event
+        if not last_mqtt_connected and event:
+            _LOGGER.debug("MQTT connection established - MQTT timer canceled.")
+
             # Cancel mqtt timer event
             with contextlib.suppress(KeyError), contextlib.suppress(TypeError):
                 self._hass.data[DOMAIN]["mqtt_timer_event"]()
@@ -379,8 +386,10 @@ class MQTTMessageHandler:
                     lambda now: self._hass.create_task(async_publish_venus_keepalive(self._hass, self._entry)),
                     timedelta(seconds=30),
                 )
-        else:
-            # Set the status of the manager to "Error"
+
+        # If last state was On(True) and the connection is lost(False), set the manager to warning and set timer event
+        elif last_mqtt_connected and not event:
+            # Set the status of the manager to running with mqtt warning
             self._hass.data[DOMAIN]["manager_status_sensor"].set_state("Running - Warning (MQTT connection lost)")
             self._hass.data[DOMAIN]["manager_last_state"] = self._hass.data[DOMAIN]["manager_status_select"].state
             self._hass.data[DOMAIN]["mqtt_timer_event"] = async_call_later(
