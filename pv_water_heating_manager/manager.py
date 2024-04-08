@@ -10,8 +10,11 @@ Sources:
         https://community.home-assistant.io/t/trying-to-isolate-slow-history/279016
 """
 
+import contextlib
 from datetime import date, datetime, time, timedelta
 import logging
+
+import numpy as np
 
 from homeassistant.components.recorder import history
 from homeassistant.config_entries import ConfigEntry
@@ -77,14 +80,17 @@ class PVWaterHeatingManager:
 
         # Get the current state of the sensors
         grid_power = await self._get_sensor_state(self._entry.data[f"grid_l{phase}"], "float")
-        critical_loads = await self._get_sensor_state(self._entry.data["critical_load"], "float")
-        critical_loads_history = await self._get_sensor_history(self._entry.data["critical_load"], secs=10)
+        critical_loads_history = await self._get_sensor_history(
+            self._entry.data["critical_load"], secs=30, percentile=60
+        )
         pv_power_history = await self._get_sensor_history(
-            self._entry.data["pv_power"], mins=10
+            self._entry.data["pv_power"], mins=10, percentile=70
         )  # History of last 10 minutes
         battery_soc = await self._get_sensor_state(self._entry.data["battery_soc"], "float")
         boiler_heating = self._hass.states.get(self._entry.data["boiler_heat"]).state
         boiler_temp_to_heat = self._hass.data[DOMAIN]["heating_temp"].state
+
+        boiler_heating = self._hass.data[DOMAIN]["debug_boiler_heating"]  # TODO: REMOVE
 
         # Check if boiler is heating
         if boiler_heating == "on":
@@ -110,35 +116,15 @@ class PVWaterHeatingManager:
                 await self.debug_value(2, "TOO MUCH POWER TAKEN FROM GRID (1)")  # TODO: REMOVE
                 return
 
-            # Critical loads should not exceed this threshold
-            if critical_loads_history >= (boiler_power + 1 / 3 * boiler_power):
+            # PV should cover 70% of the critical loads (with boiler)
+            if pv_power_history < 0.7 * (critical_loads_history):
                 _LOGGER.debug(
-                    "BL(ON->OFF): Critical loads are high enough to not power the boiler (~+500W) [%s:%s]",
-                    critical_loads_history,
-                    boiler_power + 1 / 3 * boiler_power,
+                    "BL(ON->OFF): PV is not generating enough to power the critical loads [%s:%s]",
+                    pv_power_history,
+                    (0.7 * critical_loads_history),
                 )
                 await self._boiler_power(False)
-                await self.debug_value(2, "CRITICAL LOADS ARE HIGH ENOUGH (1)")  # TODO: REMOVE
-                return
-
-            # PV should generate enough power to cover the critical loads
-            if pv_power_history < critical_loads:
-                _LOGGER.debug(
-                    "BL(ON..): PV is not generating enough to power the critical loads [%s:%s]",
-                    pv_power_history,
-                    critical_loads,
-                )
-
-                # The battery should cover minor variations but should not exceed 1/3 of the boilers power
-                if pv_power_history < (1 / 3 * boiler_power):
-                    _LOGGER.debug(
-                        "BL(ON->OFF): PV is not generating enough to power the boiler [%s:%s]",
-                        pv_power_history,
-                        1 / 3 * boiler_power,
-                    )
-                    await self._boiler_power(False)
-                    await self.debug_value(2, "PV IS NOT GENERATING ENOUGH (1)")  # TODO: REMOVE
-                    return
+                await self.debug_value(2, "PV IS NOT GENERATING ENOUGH (1)")
 
         # Boiler is not heating
         else:
@@ -162,24 +148,14 @@ class PVWaterHeatingManager:
                 await self.debug_value(2, "TOO MUCH POWER TAKEN FROM GRID (2)")  # TODO: REMOVE
                 return
 
-            # Critical loads should not exceed this threshold
-            if critical_loads_history >= (boiler_power + 1 / 3 / boiler_power):
+            # Solar system should generate enough power to cover 75% of the critical loads (+ boiler)
+            if pv_power_history < (0.75 * (critical_loads_history + boiler_power)):
                 _LOGGER.debug(
-                    "BL(OFF): Critical loads are high enough to not power the boiler (~+500W) [%s:%s]",
-                    critical_loads_history,
-                    boiler_power + 1 / 3 / boiler_power,
-                )
-                await self.debug_value(2, "CRITICAL LOADS ARE HIGH ENOUGH (2)")  # TODO: REMOVE
-                return
-
-            # PV should generate at least 1/3 of the boiler's power to start heating
-            if pv_power_history < (1 / 3 * boiler_power):
-                _LOGGER.debug(
-                    "BL(OFF): PV is not generating enough to power the boiler [%s:%s]",
+                    "BL(OFF): PV is not generating enough to power the critical loads [%s:%s]",
                     pv_power_history,
-                    1 / 3 * boiler_power,
+                    0.75 * (critical_loads_history + boiler_power),
                 )
-                await self.debug_value(2, "PV IS NOT GENERATING ENOUGH (2)")  # TODO: REMOVE
+                await self.debug_value(2, "PV IS NOT GENERATING ENOUGH (2)")
                 return
 
             # Start heating the water
@@ -273,7 +249,8 @@ class PVWaterHeatingManager:
         _LOGGER.debug("PNPH: Planning the night pre-heating")
 
         # Cancel the night pre-heating calculation
-        self._hass.data[DOMAIN]["night_heating_calc_event"]()
+        with contextlib.suppress(KeyError), contextlib.suppress(TypeError):
+            self._hass.data[DOMAIN]["night_heating_calc_event"]()
 
         manager_status = self._hass.data[DOMAIN]["manager_status_select"].state
         boiler_water_temp = await self._get_sensor_state(self._entry.data["boiler_temp2"], "float")
@@ -373,7 +350,8 @@ class PVWaterHeatingManager:
         _LOGGER.debug("SNPH: Starting the night pre-heating")
 
         # Cancel the night pre-heating
-        self._hass.data[DOMAIN]["night_heating_event"]()
+        with contextlib.suppress(KeyError), contextlib.suppress(TypeError):
+            self._hass.data[DOMAIN]["night_heating_event"]()
 
         # Check if water is already heated to the desired temperature
         boiler_water_temp = await self._get_sensor_state(self._entry.data["boiler_temp2"], "float")
@@ -431,7 +409,8 @@ class PVWaterHeatingManager:
         _LOGGER.debug("EPH: End the night pre-heating")
 
         # Cancel the night pre-heating
-        self._hass.data[DOMAIN]["night_heating_event"]()
+        with contextlib.suppress(KeyError), contextlib.suppress(TypeError):
+            self._hass.data[DOMAIN]["night_heating_event"]()
 
         # Clean cancelation
         if self._hass.data[DOMAIN]["night_heating_canceled"]:
@@ -473,7 +452,7 @@ class PVWaterHeatingManager:
         return ret
 
     async def _get_sensor_history(
-        self, entity_id, s_time=None, mins: int = 0, secs: int = 0, min_val: bool = False
+        self, entity_id, s_time=None, mins: int = 0, secs: int = 0, min_val: bool = False, percentile: int = None
     ) -> float | None:
         """Get the mean value of the sensor history, calculated from the last X minutes.
 
@@ -485,11 +464,14 @@ class PVWaterHeatingManager:
             mins: Number of minutes to go back in history
             secs: Number of seconds to go back in history
             min_val: If it is set, minimum value of the sensor history will be returned
+            percentile: If it is set, the percentile value of the sensor history will be returned
 
         Return:
-            mean_value | min_value: Mean value of the sensor history or minimum value of the sensor history
+            mean_value | min_value | percentile_value: Mean, min or percentile value of the sensor history
 
-        Source: https://www.home-assistant.io/integrations/history/
+        Source:
+                https://www.home-assistant.io/integrations/history/
+                https://numpy.org/doc/stable/reference/generated/numpy.percentile.html
 
         """
 
@@ -528,15 +510,23 @@ class PVWaterHeatingManager:
             # Convert only numeric states to floats
             numeric_states = [float(s) for s in states if s.isdigit() or _is_float(s)]
 
-            # Calculate the mean value
+            _LOGGER.debug("GSH: Numeric states %s", numeric_states)
+
+            # Calculate selected value from the history
             if numeric_states:
+                if percentile:
+                    # Calculate the percentile value
+                    percentile_value = np.percentile(numeric_states, percentile)
+                    _LOGGER.debug("GSH: Percentile value %s", percentile_value)
+                    return round(percentile_value, 2)
+
                 if min_val:
                     # Return min value
                     min_value = min(numeric_states)
                     _LOGGER.debug("GSH: Min value %s", min_value)
                     return round(min_value, 2)
 
-                # Return mean value
+                # Calculate the mean value
                 mean_value = sum(numeric_states) / len(numeric_states)
                 _LOGGER.debug("GSH: Mean value %s", mean_value)
                 return round(mean_value, 2)
@@ -631,7 +621,7 @@ class PVWaterHeatingManager:
 
         # Turn on boiler with the desired temperature
         if power:
-            # Set temperature
+            # Set temperature   #TODO: UNCOMMENT
             await self._hass.services.async_call(
                 "climate",
                 "set_temperature",
@@ -639,7 +629,7 @@ class PVWaterHeatingManager:
                 blocking=True,
             )
 
-            # Set mode to heat ("MANUAL")
+            # Set mode to heat ("MANUAL") #TODO: UNCOMMENT
             await self._hass.services.async_call(
                 "select",
                 "select_option",
@@ -647,11 +637,12 @@ class PVWaterHeatingManager:
                 blocking=True,
             )
 
+            self._hass.data[DOMAIN]["debug_boiler_heating"] = "on"  # TODO: REMOVE
             await self.debug_value(1, "BOILER ON")  # TODO: REMOVE
 
         # Turn off the boiler
         else:
-            # Set mode to off ("ANTIFREEZE")
+            # Set mode to off ("ANTIFREEZE") #TODO: UNCOMMENT
             await self._hass.services.async_call(
                 "select",
                 "select_option",
@@ -659,6 +650,7 @@ class PVWaterHeatingManager:
                 blocking=True,
             )
 
+            self._hass.data[DOMAIN]["debug_boiler_heating"] = "off"  # TODO: REMOVE
             await self.debug_value(1, "BOILER OFF")  # TODO: REMOVE
 
     @callback
@@ -680,16 +672,18 @@ class PVWaterHeatingManager:
 
         _LOGGER.debug("Grid lost handler - %s / %s", old_data, new_data)
 
-        if new_data == "1":
-            _LOGGER.warning("Grid lost")
-            await self._hass.data[DOMAIN]["manager_status_select"].async_select_option("Off")
-            self._hass.data[DOMAIN]["manager_status_sensor"].set_state("Off - Warning (Grid Lost)")
-        elif new_data not in ["0", "1"]:
-            _LOGGER.warning("Grid unknown")
-            await self._hass.data[DOMAIN]["manager_status_select"].async_select_option("Off")
-            self._hass.data[DOMAIN]["manager_status_sensor"].set_state("Off - Warning (Grid Unknown)")
-        else:
-            _LOGGER.warning("Grid back")
+        # When component is loading, ignore the grid state (false positive)
+        if not self._hass.data[DOMAIN]["component_loading"]:
+            if new_data == "1":
+                _LOGGER.warning("Grid lost")
+                await self._hass.data[DOMAIN]["manager_status_select"].async_select_option("Off")
+                self._hass.data[DOMAIN]["manager_status_sensor"].set_state("Off - Warning (Grid Lost)")
+            elif new_data not in ["0", "1"]:
+                _LOGGER.warning("Grid unknown")
+                await self._hass.data[DOMAIN]["manager_status_select"].async_select_option("Off")
+                self._hass.data[DOMAIN]["manager_status_sensor"].set_state("Off - Warning (Grid Unknown)")
+            else:
+                _LOGGER.warning("Grid back")
 
     # TODO: REMOVE
     async def debug_value(self, sensor, value):
