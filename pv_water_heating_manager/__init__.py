@@ -111,6 +111,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         {"entity_id": entry.data["debug_2"], "value": "..."},
         blocking=True,
     )
+    hass.data[DOMAIN]["debug_boiler_heating"] = "off"
+
     # TODO: DEBUG REMOVE
 
     _LOGGER.debug("PV Water Heating Manager component started.")
@@ -125,7 +127,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Turn off manager
     # Manager cancels grid lost handler, night heating, night heating calculation and stop manager updates
-    hass.data[DOMAIN]["manager_status_sensor"].set_state("Off")
+    await hass.data[DOMAIN]["manager_status_sensor"].async_select_option("Off")
 
     # Cancel the today's forecast update task
     with contextlib.suppress(KeyError), contextlib.suppress(TypeError):

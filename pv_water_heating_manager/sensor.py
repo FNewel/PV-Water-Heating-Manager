@@ -196,7 +196,7 @@ class PvGenerationForecastTomorrowSensor(SensorEntity, RestoreEntity):
         return start_time.timestamp(), end_time.timestamp()
 
     @callback
-    async def async_update(self):
+    async def async_update(self, now=None):
         """Update the Forecast sensor.
 
         Function fetches the forecast data from the VRM API and updates the sensor state.
