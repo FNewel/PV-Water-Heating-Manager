@@ -64,6 +64,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN]["boiler_power_on"] = False  # Used to check if the boiler is on
 
     # Set up the PV Water Heating Manager (Manager updates every x seconds - defined by the user)
+    # Defined in select.py, under _set_state method, when manager is turned on
     manager = PVWaterHeatingManager(hass, entry)
     hass.data[DOMAIN]["manager"] = manager
 
@@ -99,23 +100,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         async_subscribe_connection_status(hass, mqtt_handler.async_mqtt_connection_changed)
 
-    # TODO: DEBUG REMOVE
-    await hass.services.async_call(
-        "input_text",
-        "set_value",
-        {"entity_id": entry.data["debug_1"], "value": "BOILER OFF"},
-        blocking=True,
-    )
-    await hass.services.async_call(
-        "input_text",
-        "set_value",
-        {"entity_id": entry.data["debug_2"], "value": "..."},
-        blocking=True,
-    )
-
-
-    # TODO: DEBUG REMOVE
-
     _LOGGER.debug("PV Water Heating Manager component started.")
 
     return True
@@ -128,7 +112,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Turn off manager
     # Manager cancels grid lost handler, night heating, night heating calculation and stop manager updates
-    await hass.data[DOMAIN]["manager_status_sensor"].async_select_option("Off")
+    await hass.data[DOMAIN]["manager_status_select"].async_select_option("Off")
 
     # Cancel the today's forecast update task
     with contextlib.suppress(KeyError), contextlib.suppress(TypeError):
@@ -142,12 +126,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if entry.data["solar_conf_mode"] == "automatic":
         # Stop the recurring task to publish a keepalive message to Venus MQTT broker.
-        hass.data[DOMAIN]["cancel_venus_keepalive"]()
-        hass.data[DOMAIN].pop("cancel_venus_keepalive")
+        with contextlib.suppress(KeyError), contextlib.suppress(TypeError):
+            hass.data[DOMAIN]["cancel_venus_keepalive"]()
+            hass.data[DOMAIN].pop("cancel_venus_keepalive")
 
         # Unsubscribe from all the topics
         for unsub in hass.data[DOMAIN]["mqtt_subscriptions"]:
-            unsub()
+            with contextlib.suppress(KeyError), contextlib.suppress(TypeError):
+                unsub()
         hass.data[DOMAIN].pop("mqtt_subscriptions")
 
     # Unload entities
@@ -378,6 +364,9 @@ class MQTTMessageHandler:
 
             # Subscribe to the topics and publish the discovery config for sensors (if not already done)
             if not self._hass.data[DOMAIN]["mqtt_subscriptions"]:
+                # Publish first keepalive message, so the Venus MQTT broker starts publishing the requested topics
+                await async_publish_venus_keepalive(self._hass, self._entry)
+
                 await async_setup_mqtt_listeners_and_sensors(
                     self._hass, self._entry, self._hass.data[DOMAIN]["mqtt_handler"]
                 )

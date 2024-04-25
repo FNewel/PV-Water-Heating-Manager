@@ -116,8 +116,8 @@ class ManagerStatusSelect(SelectEntity, RestoreEntity):
 
         # If state changes to "Automatic" or "Manual", resume manager updates
         if state in ["Automatic", "Manual"] and self._state == "Off":
-            # Check if MQTT is connected
-            if not self.hass.data[DOMAIN]["mqtt_connected"]:
+            # Check if MQTT is connected, only if solar configuration mode is automatic
+            if self._entry.data["solar_conf_mode"] == "automatic" and not self.hass.data[DOMAIN]["mqtt_connected"]:
                 self._hass.data[DOMAIN]["manager_status_sensor"].set_state("Off - Warning (MQTT connection lost)")
                 self._state = "Off"
                 self.async_write_ha_state()
@@ -133,11 +133,13 @@ class ManagerStatusSelect(SelectEntity, RestoreEntity):
                     return
 
             manager = self.hass.data[DOMAIN]["manager"]
+            # Set manager reccuring task to run every x seconds (default 10)
             self.hass.data[DOMAIN]["cancel_manager"] = async_track_time_interval(
                 self.hass,
                 lambda now: self.hass.create_task(manager.run()),
                 timedelta(seconds=self.hass.data[DOMAIN].get("manager_updates", 10)),
             )
+            # Set grid lost handler
             self.hass.data[DOMAIN]["cancel_grid_lost_handler"] = async_track_state_change_event(
                 self.hass, ["sensor.venus_grid_lost"], manager.grid_lost_handler
             )

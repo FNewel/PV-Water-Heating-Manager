@@ -84,8 +84,6 @@ class PVWaterHeatingControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             }
                         }
                     ),
-                    vol.Optional("debug_1"): selector({"entity": {}}),  # TODO: REMOVE
-                    vol.Optional("debug_2"): selector({"entity": {}}),  # TODO: REMOVE
                 }
             )
             return self.async_show_form(step_id="user", data_schema=data_schema)
@@ -515,7 +513,7 @@ class PVWaterHeatingControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required("battery_soc_top", default=65): vol.All(int, vol.Range(min=0, max=100)),
                 vol.Required("battery_soc_bottom", default=60): vol.All(int, vol.Range(min=0, max=100)),
                 vol.Required("temp_variable", default=20): vol.All(int, vol.Range(min=0, max=100)),
-                vol.Required("grid_threshold", default=150): vol.All(int, vol.Range(min=10)),
+                vol.Required("grid_threshold", default=2000): vol.All(int, vol.Range(min=10)),
                 vol.Required("manager_updates", default=10): vol.All(int, vol.Range(min=5, max=60)),
             }
         )
