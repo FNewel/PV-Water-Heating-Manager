@@ -101,10 +101,10 @@ class ManagerStatusSelect(SelectEntity, RestoreEntity):
                 with contextlib.suppress(KeyError), contextlib.suppress(TypeError):
                     self.hass.data[DOMAIN]["night_heating_calc_event"]()  # Cancel night heating calculation
 
-                # Turn off boiler if it is on
-                boiler_heating = self._hass.states.get(self._entry.data["boiler_heat"]).state
+                # Turn off boiler if it is on (in "MANUAL" mode)
+                boiler_state = self._hass.states.get(self._entry.data["boiler_mode"]).state
 
-                if boiler_heating == "on":
+                if boiler_state == "MANUAL":
                     await self.hass.data[DOMAIN]["manager"]._boiler_power(False)
 
             # Reset variables

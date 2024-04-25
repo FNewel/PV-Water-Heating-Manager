@@ -79,6 +79,7 @@ class ManagerStatusSensor(SensorEntity, RestoreEntity):
     - Off - Warning (Grid Lost) -- Manager is off due to grid loss
     - Off - Warning (Grid Unknown) -- Manager is off due to unknown grid status
     - Off - Warning (MQTT connection lost) -- Manager is off due to lost MQTT connection
+    - Paused - Warning (Boiler Disconnected) -- Manager is paused due to disconnected boiler
     - Running - Warning (MQTT connection lost) -- Manager is running but with lost MQTT connection (It will stop running if mqtt connection is not restored in 30 seconds)
     """
 
@@ -96,6 +97,7 @@ class ManagerStatusSensor(SensorEntity, RestoreEntity):
             "Off - Warning (Grid Lost)",
             "Off - Warning (Grid Unknown)",
             "Off - Warning (MQTT connection lost)",
+            "Paused - Warning (Boiler Disconnected)",
             "Running - Warning (MQTT connection lost)",
         ]
 

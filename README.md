@@ -30,19 +30,25 @@ You need to set a static IP address. Then you need to enable MQTT in **Settings 
 - MQTT on LAN (Plaintext)
 These two settings must be enabled.
 
+> [!NOTE]
+> VenusOS Firmware version v2.87
+
 ### ESPHome component to control the boiler
 You must add the boiler using [ESPHome component for Dražice OKHE smart water heater](https://github.com/LubosD/esphome-smartboiler) to Home Assistant.
 
+> [!NOTE]
+> Version from 12. Nov 2023 (Commit 28ef062)
+
 ### VRM API
 Generate an Acess token in the VRM portal.
-After logging into [VRM portal](https://vrm.victronenergy.com/login), you will go to **Preferences -> Integration -> Acess tokens** and generate a new token.
+After logging into [VRM portal](https://vrm.victronenergy.com/login), you will go to `Preferences -> Integration -> Acess tokens` and generate a new token.
 
 Also make a note of the installation ID, you can find it in the url after **installation** (*vrm.victronenergy.com/installation/<installation_id>/dashboard*)
 
 *\*This is not required*
 
 ### MQTT on Home Assistant
-In Home Assistant under **Settings -> Devices & services** add the MQTT integration.
+In Home Assistant under `Settings -> Devices & services` add the MQTT integration.
 
 As broker ip, use VenusOS ip, port 1883 then under advanced options it is necessary to enable **Enable discovery** with **homeassistant** prefix.
 
@@ -52,7 +58,7 @@ Just copy the files directly into the homeassistant custom_components folder
 ```
 custom_components/pv_water_heating_manager/
 ```
-Then go to **Settings -> Devices & services** and add ***PV Water Heating Manager*** using the **ADD INTEGRATION** button. The whole installation is described in the UI.
+Then go to `Settings -> Devices & services` and add ***PV Water Heating Manager*** using the **ADD INTEGRATION** button. The whole installation is described in the UI.
 
 But you can choose between automatic and manual installation:
 - Choose automatic if you use the components mentioned above (VenusOS and ESPHome component), component is primarily designed to work with them. - **Recommended, manual may not work properly**.

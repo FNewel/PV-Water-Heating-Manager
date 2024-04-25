@@ -43,9 +43,13 @@ class PVWaterHeatingManager:
         manager_status = self._hass.data[DOMAIN]["manager_status_sensor"].state
         if boiler_connection == "Disconnected":
             _LOGGER.warning("Boiler is disconnected")
-            if manager_status != "Warning (Boiler Disconnected)":
-                self._hass.data[DOMAIN]["manager_status_sensor"].set_state("Warning (Boiler Disconnected)")
+            if manager_status != "Paused - Warning (Boiler Disconnected)":
+                self._hass.data[DOMAIN]["manager_status_sensor"].set_state("Paused - Warning (Boiler Disconnected)")
             return
+
+        # Return the manager status to the previous state, if it was paused due to the boiler disconnection
+        if manager_status == "Paused - Warning (Boiler Disconnected)":
+            self._hass.data[DOMAIN]["manager_status_sensor"].set_state("Running")
 
         # Check if MQTT is connected (Solar through automatic configuration)
         if self._entry.data["solar_conf_mode"] == "automatic" and not self._hass.data[DOMAIN]["mqtt_connected"]:
@@ -81,19 +85,19 @@ class PVWaterHeatingManager:
         # Get the current state of the sensors
         grid_power = await self._get_sensor_state(self._entry.data[f"grid_l{phase}"], "float")
         critical_loads_history = await self._get_sensor_history(
-            self._entry.data["critical_load"], secs=30, percentile=60
+            self._entry.data["critical_load"], secs=30, percentile=50
         )
         pv_power_history = await self._get_sensor_history(
             self._entry.data["pv_power"], mins=10, percentile=70
         )  # History of last 10 minutes
+        critical_loads = await self._get_sensor_state(self._entry.data["critical_load"], "float")
         battery_soc = await self._get_sensor_state(self._entry.data["battery_soc"], "float")
         boiler_heating = self._hass.states.get(self._entry.data["boiler_heat"]).state
+        boiler_power_on = self._hass.data[DOMAIN]["boiler_power_on"]
         boiler_temp_to_heat = self._hass.data[DOMAIN]["heating_temp"].state
 
-        boiler_heating = self._hass.data[DOMAIN]["debug_boiler_heating"]  # TODO: REMOVE
-
         # Check if boiler is heating
-        if boiler_heating == "on":
+        if boiler_power_on:
             # Battery needs to be charged at least to the bottom threshold
             if battery_soc < battery_bottom_threshold:
                 _LOGGER.debug(
@@ -116,15 +120,33 @@ class PVWaterHeatingManager:
                 await self.debug_value(2, "TOO MUCH POWER TAKEN FROM GRID (1)")  # TODO: REMOVE
                 return
 
-            # PV should cover 70% of the critical loads (with boiler)
-            if pv_power_history < 0.7 * (critical_loads_history):
-                _LOGGER.debug(
-                    "BL(ON->OFF): PV is not generating enough to power the critical loads [%s:%s]",
-                    pv_power_history,
-                    (0.7 * critical_loads_history),
-                )
-                await self._boiler_power(False)
-                await self.debug_value(2, "PV IS NOT GENERATING ENOUGH (1)")
+            # Boiler is turned on by manager, but it reached the desired temperature, so boiler's heat status is off
+            if boiler_heating == "off":
+                # PV should cover 70% of the critical loads (with boiler, boiler's heat status is off)
+                if pv_power_history < 0.7 * (critical_loads_history + boiler_power):
+                    # Check if it's not a false positive - critical loads now are lower
+                    if pv_power_history < 0.7 * (critical_loads + boiler_power):
+                        _LOGGER.debug(
+                            "BL(ON->OFF): PV is not generating enough to power the critical loads [%s/%s:%s]",
+                            pv_power_history,
+                            (0.7 * (critical_loads_history + boiler_power)),
+                            (0.7 * (critical_loads + boiler_power)),
+                        )
+                        await self._boiler_power(False)
+                        await self.debug_value(2, "PV IS NOT GENERATING ENOUGH (1-1)")
+
+            # PV should cover 70% of the critical loads (with boiler, boiler's heat status is on)
+            elif pv_power_history < 0.7 * (critical_loads_history):
+                # Check if it's not a false positive - critical loads now are lower
+                if pv_power_history < 0.7 * (critical_loads):
+                    _LOGGER.debug(
+                        "BL(ON->OFF): PV is not generating enough to power the critical loads [%s/%s:%s]",
+                        pv_power_history,
+                        (0.7 * critical_loads_history),
+                        (0.7 * critical_loads),
+                    )
+                    await self._boiler_power(False)
+                    await self.debug_value(2, "PV IS NOT GENERATING ENOUGH (1-2)")
 
         # Boiler is not heating
         else:
@@ -497,7 +519,12 @@ class PVWaterHeatingManager:
 
         sensor_history = await self._hass.async_add_executor_job(
             lambda: history.get_significant_states(
-                self._hass, start_time, end_time, [entity_id], include_start_time_state=True
+                self._hass,
+                start_time,
+                end_time,
+                [entity_id],
+                include_start_time_state=True,
+                significant_changes_only=False,
             )
         )
 
@@ -637,7 +664,7 @@ class PVWaterHeatingManager:
                 blocking=True,
             )
 
-            self._hass.data[DOMAIN]["debug_boiler_heating"] = "on"  # TODO: REMOVE
+            self._hass.data[DOMAIN]["boiler_power_on"] = True
             await self.debug_value(1, "BOILER ON")  # TODO: REMOVE
 
         # Turn off the boiler
@@ -650,7 +677,7 @@ class PVWaterHeatingManager:
                 blocking=True,
             )
 
-            self._hass.data[DOMAIN]["debug_boiler_heating"] = "off"  # TODO: REMOVE
+            self._hass.data[DOMAIN]["boiler_power_on"] = False
             await self.debug_value(1, "BOILER OFF")  # TODO: REMOVE
 
     @callback

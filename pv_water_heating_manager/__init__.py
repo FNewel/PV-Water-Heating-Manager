@@ -61,6 +61,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN]["night_heating_canceled"] = False  # Used when there is not enough excess PV (AUTOMATIC mode)
     hass.data[DOMAIN]["night_preheating"] = False  # Used to check if night pre-heating is active
     hass.data[DOMAIN]["component_loading"] = True  # Used to check if the component is loading
+    hass.data[DOMAIN]["boiler_power_on"] = False  # Used to check if the boiler is on
 
     # Set up the PV Water Heating Manager (Manager updates every x seconds - defined by the user)
     manager = PVWaterHeatingManager(hass, entry)
@@ -111,7 +112,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         {"entity_id": entry.data["debug_2"], "value": "..."},
         blocking=True,
     )
-    hass.data[DOMAIN]["debug_boiler_heating"] = "off"
+
 
     # TODO: DEBUG REMOVE
 
