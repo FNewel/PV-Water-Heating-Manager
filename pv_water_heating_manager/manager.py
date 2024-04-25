@@ -19,7 +19,10 @@ import numpy as np
 from homeassistant.components.recorder import history
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.event import async_track_time_change
+from homeassistant.helpers.event import (
+    async_track_point_in_utc_time,
+    async_track_time_change,
+)
 import homeassistant.util.dt as dt_util
 
 from .const import DOMAIN
@@ -59,6 +62,12 @@ class PVWaterHeatingManager:
         # Run the boiler night pre-heating logic
         await self.night_pre_heating()
 
+        # If automatic configuration is used, the phase is obtained from the MQTT data
+        phase = self._entry.data["phase"]
+        if not phase:
+            _LOGGER.debug("Phase is not set (waiting for mqtt data)")
+            return
+
         # Run the boiler control logic (only if night pre-heating is not heating)
         if not self._hass.data[DOMAIN]["night_preheating"]:
             await self.boiler_logic()
@@ -70,11 +79,7 @@ class PVWaterHeatingManager:
         """
 
         # Get the phase which is suported by solar system (so logic can be applied to the correct phase)
-        # If automatic configuration is used, the phase is obtained from the MQTT data
         phase = self._entry.data["phase"]
-        if not phase:
-            _LOGGER.debug("BL: Phase is not set (waiting for mqtt data)")
-            return
 
         # Get values set in the configuration by the user
         boiler_power = int(self._entry.data["boiler_power"])
@@ -106,7 +111,6 @@ class PVWaterHeatingManager:
                     battery_bottom_threshold,
                 )
                 await self._boiler_power(False)
-                await self.debug_value(2, "BATTERY DROP BELOW THRESHOLD")  # TODO: REMOVE
                 return
 
             # If for some reason energy is also taken from the grid, it should not exceed the set threshold
@@ -117,7 +121,6 @@ class PVWaterHeatingManager:
                     grid_threshold,
                 )
                 await self._boiler_power(False)
-                await self.debug_value(2, "TOO MUCH POWER TAKEN FROM GRID (1)")  # TODO: REMOVE
                 return
 
             # Boiler is turned on by manager, but it reached the desired temperature, so boiler's heat status is off
@@ -133,7 +136,6 @@ class PVWaterHeatingManager:
                             (0.7 * (critical_loads + boiler_power)),
                         )
                         await self._boiler_power(False)
-                        await self.debug_value(2, "PV IS NOT GENERATING ENOUGH (1-1)")
 
             # PV should cover 70% of the critical loads (with boiler, boiler's heat status is on)
             elif pv_power_history < 0.7 * (critical_loads_history):
@@ -146,7 +148,6 @@ class PVWaterHeatingManager:
                         (0.7 * critical_loads),
                     )
                     await self._boiler_power(False)
-                    await self.debug_value(2, "PV IS NOT GENERATING ENOUGH (1-2)")
 
         # Boiler is not heating
         else:
@@ -157,7 +158,6 @@ class PVWaterHeatingManager:
                     battery_soc,
                     battery_top_threshold,
                 )
-                await self.debug_value(2, "BATTERY NOT CHARGER ENOUGH")  # TODO: REMOVE
                 return
 
             # If for some reason energy is also taken from the grid, it should not exceed the set threshold
@@ -167,7 +167,6 @@ class PVWaterHeatingManager:
                     grid_power,
                     grid_threshold,
                 )
-                await self.debug_value(2, "TOO MUCH POWER TAKEN FROM GRID (2)")  # TODO: REMOVE
                 return
 
             # Solar system should generate enough power to cover 75% of the critical loads (+ boiler)
@@ -177,7 +176,6 @@ class PVWaterHeatingManager:
                     pv_power_history,
                     0.75 * (critical_loads_history + boiler_power),
                 )
-                await self.debug_value(2, "PV IS NOT GENERATING ENOUGH (2)")
                 return
 
             # Start heating the water
@@ -186,8 +184,7 @@ class PVWaterHeatingManager:
     async def night_pre_heating(self) -> None:
         """Run the night pre-heating logic.
 
-        It decides when to start scheduling night pre-heating, based on yesterday's minimum boiler temperature before the morning time
-        or the current boiler temperature (whichever is lower) and the user's settings.
+        It decides when to start scheduling night pre-heating, based on the total heating time from 1C to set preheat temperature
 
         Source of datetime calculation: https://stackoverflow.com/a/39651061
         """
@@ -197,6 +194,7 @@ class PVWaterHeatingManager:
         night_heating_calc_planned = self._hass.data[DOMAIN]["night_heating_calc_planned"]
         night_heating_canceled = self._hass.data[DOMAIN]["night_heating_canceled"]
         night_preheating = self._hass.data[DOMAIN]["night_preheating"]
+
         if night_heating_planned or night_heating_calc_planned or night_heating_canceled or night_preheating:
             return
 
@@ -207,48 +205,33 @@ class PVWaterHeatingManager:
 
         _LOGGER.debug("NPH: Running the night pre-heating logic (after checks)")
 
-        # Plan when pre-heat should calculate the time to start heating
-        # If the calculation is started early, the time and energy required will not be accurate
-        morning_time = self._hass.data[DOMAIN]["morning_time_time"].time
-        yesterday_morning_time = datetime.combine(datetime.now().date() - timedelta(days=1), morning_time)
-        yesterday_boiler_temp = await self._get_sensor_history(
-            self._entry.data["boiler_temp2"], mins=300, s_time=yesterday_morning_time, min_val=True
-        )  # Yesterday's minimum boiler temp from 5 hours before the morning time to the morning time
-        boiler_temp_now = await self._get_sensor_state(self._entry.data["boiler_temp2"], "float")
-        calc_temp = min(yesterday_boiler_temp, boiler_temp_now)  # Use the lower temperature
-        preheat_temp = self._hass.data[DOMAIN]["night_heating_temp"].state
-        boiler_power = int(self._entry.data["boiler_power"])
+        # Calculate how long it takes to heat the water from 1C to the maximum temperature
         boiler_volume = int(self._entry.data["boiler_volume"])
+        boiler_power = int(self._entry.data["boiler_power"])
+        water_min_temp = 1
+        preheat_temp = self._hass.data[DOMAIN]["night_heating_temp"].state
+        max_time_to_heat = await self._calculate_boiler_heat(boiler_power, boiler_volume, water_min_temp, preheat_temp)
+        max_time_to_heat = max_time_to_heat[1]
 
-        # Calculate the time to heat the water
-        boiler_heat = await self._calculate_boiler_heat(boiler_power, boiler_volume, calc_temp, preheat_temp)
-        needed_time = (
-            boiler_heat[1] + 120
-        )  # Add 2 hours to the time to heat the water, so it should be planned early enough
+        # Set the time to plan the night pre-heating
+        datetime_now = dt_util.as_local(dt_util.utcnow())
+        morning_time = self._hass.data[DOMAIN]["morning_time_time"].time
+        planned_datetime1 = (
+            datetime.combine(date.today(), morning_time) - timedelta(minutes=max_time_to_heat)
+        ).replace(tzinfo=datetime_now.tzinfo)
+        planned_time = planned_datetime1.time()
 
-        _LOGGER.debug(
-            "NPH: Night pre-heating calculation morning time [%s], yesterday's boiler temp [%s], current boiler temp [%s], preheat temp [%s], needed time [%s]",
-            morning_time,
-            yesterday_boiler_temp,
-            boiler_temp_now,
-            preheat_temp,
-            needed_time,
-        )
-
-        # If boiler heat is 0, the water is already heated to the desired temperature
-        # Then plan the night pre-heating 2 hours before the morning time (just in case) - It will be canceled if the water is already heated
-        if boiler_heat[0] == 0:
-            planned_time = datetime.combine(date.min, morning_time) - timedelta(hours=2)
+        # Check if planned time is not in the past, if so, plan it to next day
+        if self._planned_to_past(planned_datetime1):
+            _LOGGER.debug("NPH: Night pre-heating is planned in the past")
+            planned_datetime2 = datetime.combine(date.today() + timedelta(days=1), planned_time).replace(
+                tzinfo=datetime_now.tzinfo
+            )
         else:
-            planned_time = datetime.combine(date.min, morning_time) - timedelta(minutes=needed_time)
+            planned_datetime2 = datetime.combine(date.today(), planned_time).replace(tzinfo=datetime_now.tzinfo)
 
-        # Plan the night pre-heating calculation
-        self._hass.data[DOMAIN]["night_heating_calc_event"] = async_track_time_change(
-            self._hass,
-            self._plan_start_night_pre_heating,
-            hour=planned_time.hour,
-            minute=planned_time.minute,
-            second=0,
+        self._hass.data[DOMAIN]["night_heating_calc_event"] = async_track_point_in_utc_time(
+            self._hass, self._plan_start_night_pre_heating, planned_datetime2
         )
         self._hass.data[DOMAIN]["night_heating_calc_planned"] = True
 
@@ -259,65 +242,176 @@ class PVWaterHeatingManager:
     async def _plan_start_night_pre_heating(self, now) -> None:
         """Logic to plan the night pre-heating.
 
-        This is run some time before the pre-heat should be run to detect the actual water temperature and not be affected by early scheduling.
-
-        Logic is driven by the manager status:
-        - Manager in Manual mode: Pre-heating is planned based on the user's settings (Forecast is not taken into account)
-        - Manager in Automatic mode: Pre-heating is planned based on the forecast, which takes into account battery charging and water heating throughout the day
-
-        Source of datetime calculation: https://stackoverflow.com/a/39651061
+        The logic that schedules the start of the night preheating.
+        Compares the current temperature and the minimum temperature for yesterday between the time in the morning and
+        5 hours before, and schedules the start of heating well in advance.
         """
 
         _LOGGER.debug("PNPH: Planning the night pre-heating")
 
-        # Cancel the night pre-heating calculation
+        # Cancel the night pre-heating calculation event
         with contextlib.suppress(KeyError), contextlib.suppress(TypeError):
             self._hass.data[DOMAIN]["night_heating_calc_event"]()
 
-        manager_status = self._hass.data[DOMAIN]["manager_status_select"].state
-        boiler_water_temp = await self._get_sensor_state(self._entry.data["boiler_temp2"], "float")
+        # Selects the lowest temperature from the current temperature or the lowest temperature for yesterday
+        morning_time = self._hass.data[DOMAIN]["morning_time_time"].time
+        yesterday_morning_time = datetime.combine(datetime.now().date() - timedelta(days=1), morning_time)
+        yesterday_boiler_temp = await self._get_sensor_history(
+            self._entry.data["boiler_temp2"], mins=300, s_time=yesterday_morning_time, min_val=True
+        )  # Yesterday's minimum boiler temp from 5 hours before the morning time to the morning time
+        boiler_temp_now = await self._get_sensor_state(self._entry.data["boiler_temp2"], "float")
+        calc_temp = min(yesterday_boiler_temp, boiler_temp_now)  # Use the lower temperature
+
+        # Calculate the time to heat the water
         boiler_power = int(self._entry.data["boiler_power"])
         boiler_volume = int(self._entry.data["boiler_volume"])
         preheat_temp = self._hass.data[DOMAIN]["night_heating_temp"].state
-        morning_time = self._hass.data[DOMAIN]["morning_time_time"].time
+        boiler_heat = await self._calculate_boiler_heat(boiler_power, boiler_volume, calc_temp, preheat_temp)
 
-        boiler_heat = await self._calculate_boiler_heat(boiler_power, boiler_volume, boiler_water_temp, preheat_temp)
-        start_time = datetime.combine(date.min, morning_time) - timedelta(minutes=boiler_heat[1])
-
-        # If boiler heat is 0, the water is already heated to the desired temperature
-        # Block the night pre-heating and plan the end of the night pre-heating
+        # If boiler heat is 0, the water is already heated to desired temperature
+        # But plan preheat 2 hours before the morning time to check if the water is still heated to the desired temperature
         if boiler_heat[0] == 0:
-            self._hass.data[DOMAIN]["night_heating_canceled"] = True
-            self._hass.data[DOMAIN]["night_heating_event"] = async_track_time_change(
-                self._hass, self._end_pre_heating, hour=morning_time.hour, minute=morning_time.minute, second=0
-            )
+            needed_time = 120  # 2 hours
+        else:
+            needed_time = boiler_heat[1] + 60  # Add 1 hour, so it should be planned early enough
 
-            _LOGGER.debug("PNPH: Pre-heating is not planned (water is already heated to the desired temperature)")
+        _LOGGER.debug(
+            "PNPH: Morning time [%s], yesterday's boiler temp [%s], current boiler temp [%s], preheat temp [%s], needed time [%s]",
+            morning_time,
+            yesterday_boiler_temp,
+            boiler_temp_now,
+            preheat_temp,
+            needed_time,
+        )
 
-            # Remove the planned calculation
-            self._hass.data[DOMAIN]["night_heating_calc_planned"] = False
-            return
+        # Check if planned time is not in the past, if so start the night pre-heating now
+        datetime_now = dt_util.as_local(dt_util.utcnow())
+        planned_datetime = (datetime.combine(date.today(), morning_time) - timedelta(minutes=needed_time)).replace(
+            tzinfo=datetime_now.tzinfo
+        )
+        planned_time = planned_datetime.time()
 
-        if manager_status == "Manual":
+        if self._planned_to_past(planned_datetime):
+            self._hass.data[DOMAIN]["night_heating_planned"] = True
+            await self._start_night_pre_heating(None)
+        else:
             # Plan the night pre-heating
             self._hass.data[DOMAIN]["night_heating_event"] = async_track_time_change(
-                self._hass, self._start_night_pre_heating, hour=start_time.hour, minute=start_time.minute, second=0
+                self._hass, self._start_night_pre_heating, hour=planned_time.hour, minute=planned_time.minute, second=0
             )
             self._hass.data[DOMAIN]["night_heating_planned"] = True
 
-            _LOGGER.debug("PNPH: Pre-heating is planned (manager in manual mode) [%s/%s]", start_time, preheat_temp)
+        # Remove the planned calculation
+        self._hass.data[DOMAIN]["night_heating_calc_planned"] = False
 
-        # Manager is in automatic mode, so pre-heating is controlled by the manager (based on the forecast)
-        else:
+        _LOGGER.debug("PNPH: Planning the night pre-heating finished")
+
+    async def _start_night_pre_heating(self, now) -> None:
+        """Start the night pre-heating.
+
+        The function triggers the water heating in the boiler itself. Based on its temperature and manager status.
+        If the manager is in automatic mode, it takes into account enough energy during the day to charge the batteries and heat the water.
+        If planning started too early, reschedule for later, closer to morning time. At the end, schedule the end of the pre-heating.
+        """
+
+        _LOGGER.debug("SNPH: Starting the night pre-heating")
+
+        # Cancel the night pre-heating event
+        with contextlib.suppress(KeyError), contextlib.suppress(TypeError):
+            self._hass.data[DOMAIN]["night_heating_event"]()
+
+        # Check if water is already heated to the desired temperature (- 3C)
+        boiler_water_temp = await self._get_sensor_state(self._entry.data["boiler_temp2"], "float")
+        boiler_water_temp -= 3  # 3C reserve (cca 1C drop every 2 hours)
+        preheat_temp = self._hass.data[DOMAIN]["night_heating_temp"].state
+
+        morning_time = self._hass.data[DOMAIN]["morning_time_time"].time
+
+        if boiler_water_temp >= preheat_temp:
+            _LOGGER.debug("SNPH: Water is already heated to the desired temperature")
+
+            # Plan to "end" the night pre-heating, so new heating can be planned after
+            self._hass.data[DOMAIN]["night_heating_canceled"] = True
+
+            # Check if planned time is not in the past
+            check_planned_datetime = datetime.combine(date.today(), morning_time)
+
+            if self._planned_to_past(check_planned_datetime):
+                # Remove the planned heating
+                self._hass.data[DOMAIN]["night_heating_planned"] = False
+
+                await self._end_pre_heating(None)
+            else:
+                self._hass.data[DOMAIN]["night_heating_event"] = async_track_time_change(
+                    self._hass, self._end_pre_heating, hour=morning_time.hour, minute=morning_time.minute, second=0
+                )
+
+                # Remove the planned heating
+                self._hass.data[DOMAIN]["night_heating_planned"] = False
+            return
+
+        # Check how long it takes to heat the water
+        boiler_power = int(self._entry.data["boiler_power"])
+        boiler_volume = int(self._entry.data["boiler_volume"])
+        boiler_heat = await self._calculate_boiler_heat(boiler_power, boiler_volume, boiler_water_temp, preheat_temp)
+        needed_time = boiler_heat[1]  # In minutes
+
+        # Check how much time is left until the morning
+        time_now = dt_util.as_local(dt_util.utcnow())
+        morning_time2 = datetime.combine(date.today(), morning_time).replace(tzinfo=time_now.tzinfo)
+        time_left = (morning_time2 - time_now).seconds // 60  # In minutes
+
+        time_difference = time_left - needed_time
+
+        # Check if it's not too early, if so, reschedule the preheating to later
+        if time_difference > 60:
+            # Reschedule the night pre-heating to earlier time
+            _LOGGER.debug("SNPH: Rescheduling the night pre-heating to earlier time")
+
+            # Calculate the new time to start the night pre-heating
+            planned_time = (time_now + timedelta(minutes=time_difference)).time()
+
+            # Reschedule the night pre-heating
+            self._hass.data[DOMAIN]["night_heating_event"] = async_track_time_change(
+                self._hass, self._start_night_pre_heating, hour=planned_time.hour, minute=planned_time.minute, second=0
+            )
+            return
+
+        # Check if boiler is connected, if not, cancel the night pre-heating
+        boiler_connection = await self._get_sensor_state(self._entry.data["boiler_state"], "string")
+        if boiler_connection == "Disconnected":
+            _LOGGER.warning("SNPH: Boiler is disconnected")
+            self._hass.data[DOMAIN]["night_heating_canceled"] = True
+
+            # Check if planned time is not in the past
+            check_planned_datetime = datetime.combine(date.today(), morning_time)
+
+            if self._planned_to_past(check_planned_datetime):
+                # Remove the planned heating
+                self._hass.data[DOMAIN]["night_heating_planned"] = False
+                await self._end_pre_heating(None)
+            else:
+                self._hass.data[DOMAIN]["night_heating_event"] = async_track_time_change(
+                    self._hass, self._end_pre_heating, hour=morning_time.hour, minute=morning_time.minute, second=0
+                )
+
+                # Remove the planned heating
+                self._hass.data[DOMAIN]["night_heating_planned"] = False
+
+            return
+
+        # Check if manager is in automatic mode, so pre-heating is controlled by the manager, based on forecast
+        manager_status = self._hass.data[DOMAIN]["manager_status_select"].state
+        if manager_status == "Automatic":
             heating_temp = self._hass.data[DOMAIN]["heating_temp"].state  # Heating temperature (Day) set by the user
             temp_variation = self._entry.data["temp_variable"]  # Temperature variation set by the user
             min_boiler_temp = self._entry.data["boiler_min_temp"]  # Minimum boiler temperature
             battery_soc = await self._get_sensor_state(self._entry.data["battery_soc"], "int")
             battery_capacity = int(self._entry.data["battery_capacity"])  # Battery capacity in Wh
-            battery_threshold_top = self._entry.data["battery_soc_top"]  # Battery top threshold
-            desired_batt_cap = battery_capacity * battery_threshold_top / 100  # Desired battery capacity in Wh
+            battery_threshold_bottom = self._entry.data["battery_soc_bottom"]  # Battery bottom threshold
+            desired_batt_cap = battery_capacity * battery_threshold_bottom / 100  # Desired battery capacity in Wh
 
-            time_now = datetime.now().time()
+            time_now = dt_util.as_local(dt_util.utcnow()).time()
             midnight = time(0, 0)
 
             # Get forecasted PV generation, today's forecast if it's after midnight
@@ -338,93 +432,54 @@ class PVWaterHeatingManager:
             )
             battery_energy = await self._calculate_battery_energy(desired_batt_cap, battery_soc)
 
-            # If calculated energy is enough to heat the water and charge the battery, plan the night pre-heating
-            if boiler_energy_day[0] + battery_energy <= pv_forecast / 1000:
-                self._hass.data[DOMAIN]["night_heating_event"] = async_track_time_change(
-                    self._hass, self._start_night_pre_heating, hour=start_time.hour, minute=start_time.minute, second=0
-                )
-                self._hass.data[DOMAIN]["night_heating_planned"] = True
-
-                _LOGGER.debug(
-                    "PNPH: Pre-heating is planned (manager in automatic mode) [%s/%s]", start_time, preheat_temp
-                )
-            else:
+            # If calculated energy is not enough to heat the water and charge the battery, cancel the night pre-heating
+            if boiler_energy_day[0] + battery_energy > pv_forecast / 1000:
                 self._hass.data[DOMAIN]["night_heating_canceled"] = True
-                self._hass.data[DOMAIN]["night_heating_event"] = async_track_time_change(
-                    self._hass, self._end_pre_heating, hour=morning_time.hour, minute=morning_time.minute, second=0
-                )
 
-                _LOGGER.debug("PNPH: Pre-heating is not planned (not enough energy)")
+                # Check if planned time is not in the past
+                check_planned_datetime = datetime.combine(date.today(), morning_time)
 
-        # Remove the planned calculation
-        self._hass.data[DOMAIN]["night_heating_calc_planned"] = False
+                if self._planned_to_past(check_planned_datetime):
+                    self._hass.data[DOMAIN]["night_heating_planned"] = False
+                    await self._end_pre_heating(None)
+                else:
+                    self._hass.data[DOMAIN]["night_heating_event"] = async_track_time_change(
+                        self._hass, self._end_pre_heating, hour=morning_time.hour, minute=morning_time.minute, second=0
+                    )
+                    self._hass.data[DOMAIN]["night_heating_planned"] = False
 
-        _LOGGER.debug("PNPH: Planning the night pre-heating finished")
+                _LOGGER.debug("SNPH: Pre-heating is not planned (not enough energy)")
+                return
 
-    async def _start_night_pre_heating(self, now) -> None:
-        """Start the night pre-heating.
+            _LOGGER.debug("SNPH: Pre-heat can be started - Automatic mode")
 
-        It will start heating the water in the boiler to the desired temperature.
-        If the water is already heated to the desired temperature, it will not start heating.
-        Plan the end of the night pre-heating.
-        """
-
-        _LOGGER.debug("SNPH: Starting the night pre-heating")
-
-        # Cancel the night pre-heating
-        with contextlib.suppress(KeyError), contextlib.suppress(TypeError):
-            self._hass.data[DOMAIN]["night_heating_event"]()
-
-        # Check if water is already heated to the desired temperature
-        boiler_water_temp = await self._get_sensor_state(self._entry.data["boiler_temp2"], "float")
-        preheat_temp = self._hass.data[DOMAIN]["night_heating_temp"].state
-
-        morning_time = self._hass.data[DOMAIN]["morning_time_time"].time
-
-        if boiler_water_temp >= preheat_temp:
-            _LOGGER.debug("SNPH: Water is already heated to the desired temperature")
-            self._hass.data[DOMAIN]["night_heating_canceled"] = True
-            self._hass.data[DOMAIN]["night_heating_event"] = async_track_time_change(
-                self._hass, self._end_pre_heating, hour=morning_time.hour, minute=morning_time.minute, second=0
-            )
-
-            # Remove the planned heating
-            self._hass.data[DOMAIN]["night_heating_planned"] = False
-            return
-
-        # Check if boiler is connected
-        boiler_connection = await self._get_sensor_state(self._entry.data["boiler_state"], "string")
-        if boiler_connection == "Disconnected":
-            _LOGGER.warning("SNPH: Boiler is disconnected")
-            self._hass.data[DOMAIN]["night_heating_canceled"] = True
-            self._hass.data[DOMAIN]["night_heating_event"] = async_track_time_change(
-                self._hass, self._end_pre_heating, hour=morning_time.hour, minute=morning_time.minute, second=0
-            )
-
-            # Remove the planned heating
-            self._hass.data[DOMAIN]["night_heating_planned"] = False
-            return
-
-        # Start heating the water
+        # Start the night pre-heating
         self._hass.data[DOMAIN]["night_preheating"] = True
         await self._boiler_power(True, preheat_temp)
 
-        # Plan end of the night pre-heating
-        self._hass.data[DOMAIN]["night_heating_event"] = async_track_time_change(
-            self._hass, self._end_pre_heating, hour=morning_time.hour, minute=morning_time.minute, second=0
-        )
+        # Check if planned time is not in the past
+        check_planned_datetime = datetime.combine(date.today(), morning_time)
 
-        # Remove the planned heating
-        self._hass.data[DOMAIN]["night_heating_planned"] = False
+        if self._planned_to_past(check_planned_datetime):
+            # Remove the planned heating
+            self._hass.data[DOMAIN]["night_heating_planned"] = False
+
+            await self._end_pre_heating(None)
+        else:
+            # Plan end of the night pre-heating
+            self._hass.data[DOMAIN]["night_heating_event"] = async_track_time_change(
+                self._hass, self._end_pre_heating, hour=morning_time.hour, minute=morning_time.minute, second=0
+            )
+
+            # Remove the planned heating
+            self._hass.data[DOMAIN]["night_heating_planned"] = False
 
         _LOGGER.debug("SNPH: Night pre-heating started")
 
     async def _end_pre_heating(self, now) -> None:
         """End the night pre-heating.
 
-        It will stop heating the water in the boiler and turn off the boiler.
-        Also, it will set back the boiler's temperature to the desired temperature.
-
+        It will stop heating the water in the boiler (night pre-heating).
         Or it will clean cancelation if the night pre-heating was canceled.
         """
 
@@ -648,7 +703,7 @@ class PVWaterHeatingManager:
 
         # Turn on boiler with the desired temperature
         if power:
-            # Set temperature   #TODO: UNCOMMENT
+            # Set temperature
             await self._hass.services.async_call(
                 "climate",
                 "set_temperature",
@@ -656,7 +711,7 @@ class PVWaterHeatingManager:
                 blocking=True,
             )
 
-            # Set mode to heat ("MANUAL") #TODO: UNCOMMENT
+            # Set mode to heat ("MANUAL")
             await self._hass.services.async_call(
                 "select",
                 "select_option",
@@ -665,11 +720,10 @@ class PVWaterHeatingManager:
             )
 
             self._hass.data[DOMAIN]["boiler_power_on"] = True
-            await self.debug_value(1, "BOILER ON")  # TODO: REMOVE
 
         # Turn off the boiler
         else:
-            # Set mode to off ("ANTIFREEZE") #TODO: UNCOMMENT
+            # Set mode to off ("ANTIFREEZE")
             await self._hass.services.async_call(
                 "select",
                 "select_option",
@@ -678,7 +732,27 @@ class PVWaterHeatingManager:
             )
 
             self._hass.data[DOMAIN]["boiler_power_on"] = False
-            await self.debug_value(1, "BOILER OFF")  # TODO: REMOVE
+
+    def _planned_to_past(self, planned_datetime) -> bool:
+        """Check if the planned time is in the past or if the difference between the planned time and current time is less than 5 minutes.
+
+        Args:
+            planned_datetime: The planned datetime to check.
+
+        Returns:
+            bool: True if the planned time is in the past or if the difference between the planned time and current time is less than 5 minutes, False otherwise.
+
+        """
+
+        datetime_now = dt_util.as_local(dt_util.utcnow())
+        time_now = datetime_now.time()
+
+        planned_datetime_new = planned_datetime.replace(tzinfo=datetime_now.tzinfo)
+        planned_time_new = planned_datetime_new.time()
+
+        if planned_time_new <= time_now or ((datetime_now - planned_datetime_new).seconds / 60 < 5):
+            return True
+        return False
 
     @callback
     async def grid_lost_handler(self, event) -> None:
@@ -711,22 +785,3 @@ class PVWaterHeatingManager:
                 self._hass.data[DOMAIN]["manager_status_sensor"].set_state("Off - Warning (Grid Unknown)")
             else:
                 _LOGGER.warning("Grid back")
-
-    # TODO: REMOVE
-    async def debug_value(self, sensor, value):
-        """Debug text."""
-
-        if sensor == 1:
-            await self._hass.services.async_call(
-                "input_text",
-                "set_value",
-                {"entity_id": self._entry.data["debug_1"], "value": value},
-                blocking=True,
-            )
-        elif sensor == 2:
-            await self._hass.services.async_call(
-                "input_text",
-                "set_value",
-                {"entity_id": self._entry.data["debug_2"], "value": value},
-                blocking=True,
-            )
