@@ -411,14 +411,13 @@ class PVWaterHeatingManager:
             battery_threshold_bottom = self._entry.data["battery_soc_bottom"]  # Battery bottom threshold
             desired_batt_cap = battery_capacity * battery_threshold_bottom / 100  # Desired battery capacity in Wh
 
-            time_now = dt_util.as_local(dt_util.utcnow()).time()
-            midnight = time(0, 0)
+            morning_time_check = datetime.combine(date.today(), morning_time)
 
-            # Get forecasted PV generation, today's forecast if it's after midnight
-            if time_now > midnight:
-                pv_forecast = self._hass.data[DOMAIN]["pv_generation_forecast_today_sensor"].state
-            else:
+            # Get forecasted PV generation, today's forecast if it's before the morning time, tomorrow's forecast if it's after
+            if self._planned_to_past(morning_time_check):
                 pv_forecast = self._hass.data[DOMAIN]["pv_generation_forecast_tomorrow_sensor"].state
+            else:
+                pv_forecast = self._hass.data[DOMAIN]["pv_generation_forecast_today_sensor"].state
 
             # Calculate minimum temperature to heat the water to (heating temperature - variation can be lower than the minimum boiler temperature)
             # Calculate the difference between the minimum temperature and the pre-heat temperature
