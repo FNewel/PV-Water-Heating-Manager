@@ -408,8 +408,7 @@ class PVWaterHeatingManager:
             min_boiler_temp = self._entry.data["boiler_min_temp"]  # Minimum boiler temperature
             battery_soc = await self._get_sensor_state(self._entry.data["battery_soc"], "int")
             battery_capacity = int(self._entry.data["battery_capacity"])  # Battery capacity in Wh
-            battery_threshold_bottom = self._entry.data["battery_soc_bottom"]  # Battery bottom threshold
-            desired_batt_cap = battery_capacity * battery_threshold_bottom / 100  # Desired battery capacity in Wh
+            battery_threshold_top = self._entry.data["battery_soc_top"]  # Battery top threshold
 
             morning_time_check = datetime.combine(date.today(), morning_time)
 
@@ -429,7 +428,7 @@ class PVWaterHeatingManager:
             boiler_energy_day = await self._calculate_boiler_heat(
                 boiler_power, boiler_volume, preheat_temp, delta_temp
             )
-            battery_energy = await self._calculate_battery_energy(desired_batt_cap, battery_soc)
+            battery_energy = await self._calculate_battery_energy(battery_capacity, battery_soc, battery_threshold_top)
 
             # If calculated energy is not enough to heat the water and charge the battery, cancel the night pre-heating
             if boiler_energy_day[0] + battery_energy > pv_forecast / 1000:
